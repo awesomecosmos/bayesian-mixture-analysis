@@ -1,0 +1,364 @@
+---
+title: "STAT461 Project Report"
+author: "Aayushi Verma (84233071)"
+date: "due Fri 15/10/21, Week 11"
+output:
+  html_document: 
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## The project topic chosen is **Bayesian Mixture Analysis**. 
+
+# 1. Introduction
+One problem of interest in statistics is that of clustering and mixture models. Given a dataset, to draw some inference, one may attempt to identify clusters, or sub-populations, of data points which share some common characteristics. The process of identifying clusters, or sub-populations within an overall population dataset is known as **mixture modelling**. Mixture models are useful for making statistical inferences about the characteristics of these sub-populations/clusters, given the population dataset. 
+
+Given a dataset with $N$ number of data points, the aim of classical mixture modeling is to identify the closest cluster centre for each point, replace each cluster centre by the average of the closest data points, and repeat until the model converges. This is known as K-means clustering. This method of clustering often involves approximating the mixtures as Gaussian distributions. On the other hand, Bayesian mixture modelling uses Markov Chain Monte Carlo (MCMC) methods to find mixtures in the distribution with an unknown number of components.
+
+Some real-world applications of mixture modelling from studies in various fields include identifying quantitative traits on chromosomes in biology, distinguishing between spam email and regular email in computer science, identification of fire ant infestations in habitats in Brisbane, identifying fuel spill areas in the soil in Antarctica, identifying galaxy populations in astronomy, resolution of images in computer science, and many more applications. Mixture modelling is a very versatile tool to analyse any kind of dataset which may have sub-populations within. This is also a good tool in machine learning, where the algorithms can be taught to cluster data points within certain mixture components, for example.
+
+# 2. Theory and Methodology
+
+As stated in the Introduction, the difference between the approach to classical and Bayesian cluster/mixture modeling and analysis is the usage of MCMC methods to determine the number of mixture components. For this project, we will consider the finite mixture problem, which deals with a finite number (may be known or unknown) of mixture components, say $K$ mixture components, in the data. 
+
+Let's consider the general formulation of a mixture model. We start by assuming that in a sample, there are $i=1,...,n$ components, each of which belong to one of $K$ sub-populations, or clusters, in the data. To simplify the mixture model, we introduce a latent variable $z_i$, which gives the index of the subcluster each observation belongs to. Then, we can write the distribution of an observation $y_i$ for each component dependent on the latent variable $z_i$ as:
+$$y_i|z_i\sim f(\theta_{z_i},\phi)$$
+Here, $f(\theta,\phi)$ is a sampling distribution with parameters $\theta_k$ which corresponds to a subpopulation $k$ for $k=1,...,K$, and $\phi$ which is a fixed, non-variable parameter. If we take the probability of a proportion of the population which belongs to a cluster $k$, i.e. the mixture weight, as:
+$$Pr(z_i=k)=\pi_k$$
+then the likelihood after marginalizing out the latent variable $z_i$ is given by:
+$$g(y|\pi,\theta,\phi)=\Sigma_{k=1}^K\pi_k f(y|\theta_k,\phi)$$
+which is a finite mixture with K components. In the Bayesian framework of finite mixture models, the unknown parameters $k, \pi$ and $\theta$ are each drawn from their own prior distributions. The prior for $\pi$ is always taken to be a symmetric Dirichlet distribution, $\pi \sim D(\delta,...,\delta)$ to allow uniform mixture weights per component. If we assume a normal distribution, then we have $f(y|\theta,\phi)=N(y|\theta,\phi)$, such that for each cluster $k$, the likelihood is given by: $(y_i|z_i=k)\sim N(\theta_k,\phi)$. However, this assumption of a normal distribution restricts the data to be assumed with a fixed shape. If we allow the mean to vary across clusters, then we have a more flexible mixture model:
+$$g(y|\pi,\theta,\phi)=\Sigma_{k=1}^K\pi_k N(y|\theta_k,\phi)$$
+A Bayesian finite mixture model as we just saw above, has multiple unknown parameters whose densities, priors and distributions are unknown and have to be estimated. One method of estimating the parameters, their priors and their distributions is using reverse-jump Markov Chain Monte Carlo simulation. Using the reverse jump MCMC methodology allows simulation of the posterior distribution of the parameter space(s), whether the components are known or unknown, using a *reversibility constraint* on moves, which is the main difference between ordinary MCMC and reverse jump MCMC. A brief overview of the Bayesian finite mixture modelling algorithm is presented below:
+
+1. a jump from a model $\mathfrak{M}_1$ to a new model $\mathfrak{M}_2$ is proposed using reverse jump MCMC
+2. the parameters $k, \pi$ and $\theta$ are estimated by each being drawn from their prior distributions and the current values are updated
+3. the posterior sample is generated from these parameters using reverse jump MCMC
+4. a distribution is proposed for a new value $y_{i+1}$ given the current value $y_{i}$
+5. the distribution is calculated for the new value and either accepted or rejected with a certain probability
+6. the steps are repeated until convergence is reached
+
+To demonstrate the application of finite mixture modelling on a dataset, we will be using the "palmer-penguins" dataset, and analysing the penguins' bill depths and bill lengths. In this example of penguin bill depths vs bill lengths, we can represent our analysis model as:
+$$y_i|k_i\sim N(\mu(k_i),\tau(k_i))$$
+where $y_i$ is a single observation of a penguin's bill depth (or length), $k_i$ is the cluster to which the penguin for $y_i$ belongs to, and $\mu$ and $\tau$ are the mean and variance of the data. We represent this distribution as a normal distribution. Its likelihood is given by:
+
+$$g(y_i|\pi,k_i,\phi)=\Sigma_{i=1}^K\pi_i N(y_i|k_i,\phi)$$
+The prior for $\pi_i$ is the Dirichlet prior as given above and the prior for $k_i$ is taken to be uniform. The prior of $\theta$ is unknown and has to be estimated using reverse jump MCMC. In the next section, we will find the posterior distribution of this model.
+
+# 3. Example
+
+To demonstrate how Bayesian cluster analysis/mixture modelling works, we will use the dataset "palmerpenguins" and use the R package "mixAK" to do the analysis. We will assume an unknown number of distributions, but let the maximum number of components be 10, and we will attempt to find clusters within the data for the penguins' bill depths and lengths. We start by initialising the data and doing some exploratory analysis. We then set parameters for running the MCMC simulation, and set a grid of values for evaluating predictive density for the models. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+library(palmerpenguins)
+library(ggplot2)
+library(tidyverse)
+library(MCMCglmm)
+library(mixAK)
+library(cluster.datasets)
+library("mixtools")
+library(MASS)
+
+penguins.clean <- penguins[(!is.na(penguins$bill_length_mm))&
+                             (!is.na(penguins$bill_depth_mm))&
+                             (!is.na(penguins$species))&
+                             (!is.na(penguins$sex)),]
+my_xlab <- "bill depth (mm)"
+my_ylab <- "bill length (mm)"
+my_scale <- list(shift=0, scale=1)
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+par(bty="n")
+layout(matrix(c(0,1,1,1,1,0, 2,2,2,3,3,3), nrow=2, byrow=TRUE))
+plot(penguins$bill_depth_mm,penguins$bill_length_mm, col="darkviolet", pch=16, 
+     xlab=my_xlab, ylab=my_ylab, main="Bill Depth vs Bill Length")
+hist(penguins$bill_depth_mm, prob=TRUE, col="mediumslateblue", 
+     xlab=my_xlab, ylab="Density", main="Bill Depth",breaks=75)
+hist(penguins$bill_length_mm, prob=TRUE, col="mediumslateblue", 
+     xlab=my_ylab, ylab="Density", main="Bill Length",breaks=75)
+
+# INITIALISATION
+bill_depth <- c(penguins.clean$bill_depth_mm)
+bill_length <- c(penguins.clean$bill_length_mm)
+my_dataset <-  data.frame(bill_depth, bill_length)
+my_kmax = 10
+
+parRJMCMC2 <- list(par.u1=c(2, 2),par.u2=c(2, 2),par.u3=c(1, 1))
+PDensRJ2 <- list()
+nMCMC <- c(burn=5000, keep=20000, thin=10, info=10000)
+ygrid <- list(bill_depth=seq(12, 22, length=100), bill_length=seq(30, 60, length=100))
+RJPrior2 <- list(priorK="uniform", Kmax=my_kmax,delta=1)
+```
+
+In the exploratory scatter plot, we observe that there are at least 2 clusters visible in the data, and the histograms for bill depth and bill length each appear to have at least 2 main peaks. We have kept the number of iterations for burn-in and keeping quite short to save computation time when compiling this report, however by increasing the number of iterations, a more accurate result may be found. We then set the priors. In this simulation, we are attempting to estimate the number of components using the reverse jump MCMC method. We will therefore now run mixAK's NMixMCMC function for finding the mixtures in the data. This function runs a MCMC model for an unknown density with a normal mixture for either known or unknown number of components. For a known number of components, the function will run Gibbs sampling MCMC, however since we are assuming an unknown number of components, the function uses reverse jump MCMC. Let's run 2 MCMC chains for comparison. The NMixMCMC function takes as input the dataset, a prior for which we have used a uniform prior with a maximum of 10 components and delta set to 1 for the mixture weights, and parameters for the reverse jump MCMC as well as the MCMC simulation parameters.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='hide'}
+RJModel2 <- NMixMCMC(y0=my_dataset, prior=list(priorK="uniform", Kmax=10, delta=1), 
+                     RJMCMC=list(par.u1=c(2, 2),par.u2=c(2, 2),par.u3=c(1, 1)),
+                     nMCMC=c(burn=5000, keep=20000, thin=10, info=10000), 
+                     scale=my_scale, PED=TRUE)
+```
+
+We now wish to find the number of mixtures, $K$, identified in the data in each chain. From the code below, we find the posterior probability for each chain for each of K components identified in the mixture. The K values will change every time this document is compiled. In most of the simulations run, the K-component with the highest proportion has been $K=3$, which indicates with a strong probability that the number of mixtures identified in the sample is 3. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+ch1 <- "Posterior probabilities for K for Chain 1:"
+ch2 <- "Posterior probabilities for K for Chain 2:"
+print(ch1)
+print(RJModel2[[1]]$propK)  # proportion of K for chain 1
+print(ch2)
+print(RJModel2[[2]]$propK)  # proportion of K for chain 2
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+#Similarly, we can compute the DIC for each chain. Again, the DIC values will change every time this document is compiled, but if the difference in both DIC values is <3, then either chain is not statistically significant, i.e. one chain does not provide a much better fit over the other. On the other hand, if the DIC difference is >3, then the chain with the lower DIC value is regarded as more statistically significant.
+#c(RJModel2[[1]]$DIC$DIC, RJModel2[[2]]$DIC$DIC) # DIC for each chain
+#print(paste("DIC for Chain 1 = ", round(RJModel2[[1]]$DIC$DIC,4)))
+#print(paste("DIC for Chain 2 = ", round(RJModel2[[2]]$DIC$DIC,4)))
+#print(paste("DIC Difference = ", round(abs(RJModel2[[1]]$DIC$DIC - RJModel2[[2]]$DIC$DIC),4)))
+```
+
+From the reverse jump MCMC mixture analysis, we can derive the posterior distribution. Plots of the distribution and density are included in the Appendix, however we have summarised the results for Chain 1 for the bill depth and bill length posterior distributions here. A full output of statistics for both chains in included in the Appendix.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+rnorm_depth_ch1 <- rnorm(10^4, mean=mean(RJModel2[[1]]$pm.y$y1), sd=sd(RJModel2[[1]]$pm.y$y1))
+rnorm_depth_ch2 <- rnorm(10^4, mean=mean(RJModel2[[2]]$pm.y$y1), sd=sd(RJModel2[[2]]$pm.y$y1))
+rnorm_length_ch1 <- rnorm(10^4, mean=mean(RJModel2[[1]]$pm.y$y2), sd=sd(RJModel2[[1]]$pm.y$y2))
+rnorm_length_ch2 <- rnorm(10^4, mean=mean(RJModel2[[2]]$pm.y$y2), sd=sd(RJModel2[[2]]$pm.y$y2))
+print("Posterior distribution summary for bill depth:")
+summary(rnorm_depth_ch1)
+print("Posterior distribution summary for bill length:")
+summary(rnorm_length_ch1)
+```
+
+We now plot the 2 MCMC chains for predictive density distribution against histograms of the data to visualise the outcome of the mixture modelling. In most of the simulations run, the mixture analysis for both chains has identified 2 normal distributions per data axis (bill depth and bill length), however the fit of each chain may differ each time the simulation is run.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='hide'}
+# Marginal predictive densities
+PDensRJ2[[1]] <- NMixPredDensMarg(RJModel2[[1]], grid = ygrid)
+PDensRJ2[[2]] <- NMixPredDensMarg(RJModel2[[2]], grid = ygrid)
+# Joint predictive density for 1 chain
+JPDensModel0 <- list()
+JPDensModel0[[1]] <- NMixPredDensJoint2(RJModel2[[1]], grid=ygrid) 
+```
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+# Plot of the marginal predictive density with the histogram
+par(mfrow=c(2, 2), bty="n")
+ylimE <- c(0, max(c(PDensRJ2[[1]]$dens[[1]], PDensRJ2[[2]]$dens[[1]])))
+ylimW <- c(0, max(c(PDensRJ2[[1]]$dens[[2]], PDensRJ2[[2]]$dens[[2]])))
+
+# Plot of the marginal predictive density with the histogram
+par(mfrow=c(1, 2), bty="n")
+hist(bill_depth, prob=TRUE, col="mediumslateblue", 
+        xlab=my_xlab, ylab="Density", main=paste("Predictive Density (Bill Depth)"), 
+        ylim=ylimE,breaks=50)
+lines(PDensRJ2[[1]]$x$x1, PDensRJ2[[1]]$dens[[1]], col="deeppink", lwd=4)
+lines(PDensRJ2[[2]]$x$x1, PDensRJ2[[2]]$dens[[1]], col="limegreen", lwd=2)
+legend("topleft", legend = c("Chain 1", "Chain 2"),
+       col = c("deeppink", "limegreen"), lty = 1:2, cex = 0.8)
+hist(bill_length, prob=TRUE, col="mediumslateblue", 
+        xlab=my_ylab, ylab="Density", main=paste("Predictive Density (Bill Length)"), ylim=ylimW,breaks=50)
+lines(PDensRJ2[[1]]$x$x2, PDensRJ2[[1]]$dens[[2]], col="deeppink", lwd=4)
+lines(PDensRJ2[[2]]$x$x2, PDensRJ2[[2]]$dens[[2]], col="limegreen", lwd=2)
+```
+
+We observe the fitting of both chains to the data - for both plots, the mixture modelling has identified a mixture of 2 normal distributions. But how does this relate back to the original data? We want to observe how each data point is identified according to the cluster analysis and what that tells us about the original data. Below, we plot a busy figure, where several components are to be noted. First, the background of the plot is a heat map, showing the density concentrations of data points in the data set. This is overlaid by a contour plot. We see from the heat map that there are 3 darker regions, indicating a high concentration of data points in these regions. This observation is supplemented from the contour map, which shows dense contours on top of the dark regions. Now, we overlay the data points according to three differentiating features in the dataset: 1. penguin species, 2. islands on which penguins were observed, and 3. sex of the penguins. We now compare the combined heat map/contour map with the aforementioned three possible sub-populations which have been identified, and how well of a fit they provide.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+adelie <- penguins.clean[(penguins.clean$species=='Adelie'),]
+gentoo <- penguins.clean[(penguins.clean$species=='Gentoo'),]
+chinstrap <- penguins.clean[(penguins.clean$species=='Chinstrap'),]
+# Image plot of the joint predictive density with the scatterplot
+par(mfrow=c(1, 1), bty="n")
+plot(my_dataset,xlab=my_xlab, ylab=my_ylab,
+     main="Joint Predictive Density Countour Map for Chain 1: Species")
+image(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+         JPDensModel0[[1]]$dens[["1-2"]], add=TRUE, 
+         col=rev(heat_hcl(33, c=c(80, 30), l=c(30, 90), power=c(1/5, 1.3)))) 
+contour(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+           JPDensModel0[[1]]$dens[["1-2"]], 
+           col="darkviolet", add=TRUE)
+points(adelie$bill_depth_mm, adelie$bill_length_mm, col="deeppink", pch = 20)
+points(gentoo$bill_depth_mm, gentoo$bill_length_mm, col="dodgerblue", pch = 20)
+points(chinstrap$bill_depth_mm, chinstrap$bill_length_mm, col="limegreen", pch = 20)
+legend("topleft", legend = c("Adelie", "Gentoo", "Chinstrap"),
+       col = c("deeppink", "dodgerblue", "limegreen"), lty = 1:2, cex = 0.8)
+```
+
+For the above plot which maps the data points according to the species of the penguins, we see that the data points correspond well to the number of mixtures identified in the dataset. 
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+biscoe <- penguins.clean[(penguins.clean$island=='Biscoe'),]
+dream <- penguins.clean[(penguins.clean$island=='Dream'),]
+torgersen <- penguins.clean[(penguins.clean$island=='Torgersen'),]
+# Image plot of the joint predictive density with the scatterplot
+par(mfrow=c(1, 1), bty="n")
+plot(my_dataset,xlab=my_xlab, ylab=my_ylab,
+     main="Joint Predictive Density Countour Map for Chain 1: Islands")
+image(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+      JPDensModel0[[1]]$dens[["1-2"]], add=TRUE, 
+      col=rev(heat_hcl(33, c=c(80, 30), l=c(30, 90), power=c(1/5, 1.3)))) 
+contour(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+        JPDensModel0[[1]]$dens[["1-2"]], 
+        col="darkviolet", add=TRUE)
+points(biscoe$bill_depth_mm, biscoe$bill_length_mm, col="deeppink", pch = 20)
+points(dream$bill_depth_mm, dream$bill_length_mm, col="dodgerblue", pch = 20)
+points(torgersen$bill_depth_mm, torgersen$bill_length_mm, col="limegreen", pch = 20)
+legend("topleft", legend = c("Biscoe", "Dream", "Torgersen"),
+       col = c("deeppink", "dodgerblue", "limegreen"), lty = 1:2, cex = 0.8)
+```
+
+For the above plot where the data points have been plotted according to the island each penguin was observed on, we see that the data points do not correspond very well to the clusters identified within the dataset.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+male <- penguins.clean[(penguins.clean$sex=='male'),]
+female <- penguins.clean[(penguins.clean$sex=='female'),]
+# Image plot of the joint predictive density with the scatterplot
+par(mfrow=c(1, 1), bty="n")
+plot(my_dataset,xlab=my_xlab, ylab=my_ylab,
+     main="Joint Predictive Density Countour Map for Chain 1: Sex")
+image(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+      JPDensModel0[[1]]$dens[["1-2"]], add=TRUE, 
+      col=rev(heat_hcl(33, c=c(80, 30), l=c(30, 90), power=c(1/5, 1.3)))) 
+contour(JPDensModel0[[1]]$x$bill_depth, JPDensModel0[[1]]$x$bill_length, 
+        JPDensModel0[[1]]$dens[["1-2"]], 
+        col="darkviolet", add=TRUE)
+points(male$bill_depth_mm, male$bill_length_mm, col="royalblue", pch = 20)
+points(female$bill_depth_mm, female$bill_length_mm, col="deeppink", pch = 20)
+legend("topleft", legend = c("Male", "Female"),
+       col = c("royalblue", "deeppink"), lty = 1:2, cex = 0.8)
+```
+
+For the above plot, the data points were plotted according to the sec of each penguins, and again we see that the data points do not match the clusters at all. 
+
+Again, in most of the simulations run, 3 sub-populations within the bill depth/length data have been identified. We see that each of these clusters correspond to certain penguin characteristics. The cluster in the bottom-right shows that the associated penguin sub-population have short but deep bills, the cluster in the top-right also have deep bills like the bottom-right cluster, but longer bills instead of shorter bills. The top-left cluster have shallow and long bills. But the question is what sub-populations did the algorithm actually identify, and what do these correspond to? We find that out of the three possible sub-population types shown above, it is most likely that the data points are clustered according to their species, rather than island or sex. This output of the the algorithm can be verified by doing further analysis with the mixture weighting on each point, however this extra analysis has not been included in this report due to computation constraints. 
+
+Now we wish to check convergence of the reverse jump MCMC output. For this, let's first check the convergence for the number of clusters $K$ identified.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+# getting trace plots for both chains
+# chain 1
+start1 <- RJModel2[[1]]$nMCMC["burn"] + 1
+end1 <- RJModel2[[1]]$nMCMC["burn"] + RJModel2[[1]]$nMCMC["keep"]
+chK1 <- mcmc(RJModel2[[1]]$K, start=start1, end=end1)
+chgammaInv1 <- mcmc(RJModel2[[1]]$gammaInv, start=start1, end=end1)
+chmixture1 <- mcmc(RJModel2[[1]]$mixture, start=start1, end=end1)
+chdeviance1 <- mcmc(RJModel2[[1]]$deviance, start=start1, end=end1)
+# chain2
+start2 <- RJModel2[[2]]$nMCMC["burn"] + 1
+end2 <- RJModel2[[2]]$nMCMC["burn"] + RJModel2[[2]]$nMCMC["keep"]
+chK2 <- mcmc(RJModel2[[2]]$K, start=start2, end=end2)
+chgammaInv2 <- mcmc(RJModel2[[2]]$gammaInv, start=start2, end=end2)
+chmixture2 <- mcmc(RJModel2[[2]]$mixture, start=start2, end=end2)
+chdeviance2 <- mcmc(RJModel2[[2]]$deviance, start=start2, end=end2)
+
+lwd <- 0.5   
+
+# USE THIS ONE
+par(mfrow=c(1, 2), bty="n")
+traceplot(chK1, smooth=TRUE, lwd=lwd, main="K Convergence",col="deeppink")
+traceplot(chK2, smooth=TRUE, lwd=lwd, col="limegreen")
+```
+
+We see that the value of $K$ modelled in each iteration of the reverse jump MCMC algorithm tends to be a discrete value, but converges to a certain value by the end of iterations for each chain. Let's compare this convergence to a density plot of the $K$ value for each chain. Note that the pink colour refers to Chain 1, and the green colour to Chain 2.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+# USE THIS ONE
+par(mfrow=c(2, 1), bty="n")
+densplot(chK1, show.obs=TRUE, col="deeppink", main="Density of Estimated K Components")
+densplot(chK2, show.obs=TRUE, col="limegreen")
+```
+
+We again find that the reverse jump MCMC identifies values of $K$ with certain densities. In most simulations, the $K$ value with highest density has been $K$=3. Now we will check the convergence for bill depth and bill length for each chain.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+par(mfrow=c(2, 2), bty="n")
+traceplot(chmixture1[, "y.Mean.1"], smooth=FALSE,
+          col="deeppink", lwd=lwd, main="Mixture Mean for Bill Depth")
+traceplot(chmixture1[, "y.Mean.2"], smooth=FALSE,
+          col="deeppink", lwd=lwd, main="Mixture Mean for Bill Length")
+traceplot(chmixture2[, "y.Mean.1"], smooth=FALSE,
+          col="limegreen", lwd=lwd)
+traceplot(chmixture2[, "y.Mean.2"], smooth=FALSE,
+          col="limegreen", lwd=lwd)
+```
+
+We see that the model converges smoothly to a certain value for the mean of each axis for each chain. These converged mean values correpond to the posterior mean identified earlier.
+
+Hence, by analysing a simple dataset of penguin bill depths and lengths using mixture analysis, we have demonstrated the usage of mixture modelling for identifying sub-populations within a dataset with no supplemental information, and being able to make inferences on the sub-populations and overall data. More statistics and analysis are included in the Appendix. 
+
+
+# 4. Conclusion
+
+In this report, we introduced the concept of mixture analysis, and how it differs from its Bayesian implementation. We considered the finite mixture problem with unknown mixture components, which uses the reverse jump MCMC methodology to simulate the posterior distribution of the parameter space using a reversibility constraint when jumping between models (hence the name). We then applied a finite mixture analysis with unknown components on the `palmerpenguins' dataset using the R package 'mixAK', for the bill depths and bill lengths of the penguins. From this analysis, we found that the algorithm identified (with a higher probability) 3 clusters in the data, and it attributed each data point to a cluster according to penguin species. From this analysis, we learn that by considering the dataset of bill depths and lengths of the penguins, there are 3 sub-clusters, or sub-populations, which each correspond to one of 3 species, i.e. that short bill depths and long bill lengths correspond to Gentoo penguins, longer bill depths and short bill lengths correspond to Adelie penguins, and long bill depths and lengths correspond to Chinstrap penguins. This was a very simple toy example to demonstrate the capabilities of Bayesian mixture analysis, however its applications in the real world are very useful. 
+
+Not only can Bayesian mixture modelling be applied to a dataset with a finite number of mixtures, but also an infinite number of mixtures. In addition, this analysis can be applied to known or unknown number of mixtures, univariate or multivariate data, and it can use a weakly-informed or strongly-informed prior (though a weak prior will not give accurate results), and can use different types of priors, e.g. 'mixAK' accepts fixed, uniform, or Poisson priors. An interesting problem with mixture models is the label-switching problem, which refers to the invariance of the likelihood under relabeling of the mixture components. This causes a very symmetric posterior distribution, which makes identification difficult. This effect becomes more prominent in multidimensional datasets, which means that estimating the parameters of the distribution becomes difficult. 
+
+Nevertheless, we have learned that the method of mixture modelling and cluster analysis is a very useful tool to analyse a variety of datasets and gain inference about sub-populations within the data, efficiently compute Bayes estimators for mixtures of these distributions, and estimate posterior distributions.
+
+# References
+
+- Komarek, A., \& Komarkova, L. (2014). Capabilities of R Package mixAK for Clustering Based on Multivariate Continuous and Discrete Longitudinal Data. Journal of Statistical Software, 59(12).
+- Richardson, S., \& Green, P. J. (1997). On Bayesian Analysis of Mixtures with an Unknown Number of Components. J. R. Statist. Soc. B, 59(4).
+- Komárek, A. (2020). mixAK (5.3) [Multivariate Normal Mixture Models and Mixtures of Generalized Linear Mixed Models Including Model Based Clustering]. CRAN. https://cran.r-project.org/web/packages/mixAK/index.html
+- Benaglia T, Chauveau D, Hunter DR, \& Young D (2009). “mixtools: An R Package for Analyzing Finite Mixture Models.” Journal of Statistical Software, 32(6), 1–29. http://www.jstatsoft.org/v32/i06/. 
+- Pelleg, D. \& Moore, A. 1999. Accelerating exact k-means algorithms with geometric reasoning. In Proceedings of the fifth ACM SIGKDD international conference on Knowledge discovery and data mining (KDD '99). Association for Computing Machinery, New York, NY, USA, 277–281. DOI:https://doi.org/10.1145/312129.312248
+- Marin, J., Mengersen, K., \& Robert, C. (2005). Bayesian Modelling and Inference on Mixtures of Distributions. Dey, D & Rao, C (Eds.) Handbook of Statistics. Elsevier, Netherlands, pp. 459-507. 
+- Gelman, A., Carlin, J. B., Stern, H. S., Dunson, D. B., et al. (2021). Bayesian Data Analysis. Third edition (with errors fixed as of 6 April 2021).
+
+# Appendix
+
+Below is the full output summary for RJModel2, the output of the mixture estimation NMixMCMC.
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+print(RJModel2)
+```
+
+Now we check the actual means of the bill depth and length data against the estimated values for each chain, along with the standard deviations.
+```{r echo=TRUE, message=FALSE, warning=FALSE, results='show'}
+mean(penguins.clean$bill_depth_mm) # actual mean of bill depths
+mean(RJModel2[[1]]$mixture$y.Mean.1) # calculated bill depth mean for Chain 1
+mean(RJModel2[[2]]$mixture$y.Mean.1) # calculated bill depth mean for Chain 2
+mean(RJModel2[[1]]$mixture$y.SD.1) # calculated bill depth standard deviation for Chain 1
+mean(RJModel2[[2]]$mixture$y.SD.1) # calculated bill depth standard deviation for Chain 2
+
+mean(penguins.clean$bill_length_mm) # actual mean of bill lengths
+mean(RJModel2[[1]]$mixture$y.Mean.2) # calculated bill length mean for Chain 1
+mean(RJModel2[[2]]$mixture$y.Mean.2) # calculated bill length mean for Chain 2
+mean(RJModel2[[1]]$mixture$y.SD.2) # calculated bill length standard deviation for Chain 1
+mean(RJModel2[[2]]$mixture$y.SD.2) # calculated bill length standard deviation for Chain 2
+```
+
+The posterior distributions and densities for each chain derived from the output of running the model NMixMCMC are below.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, results='show'}
+dat1 = data.frame(x=rnorm_depth_ch1, group="Chain 1")
+dat2 = data.frame(x=rnorm_depth_ch2, group="Chain 2")
+depth_dat = rbind(dat1, dat2)
+dat3 = data.frame(x=rnorm_length_ch1, group="Chain 1")
+dat4 = data.frame(x=rnorm_length_ch2, group="Chain 2")
+length_dat = rbind(dat3, dat4)
+
+ggplot(depth_dat, aes(x, fill=group, colour=group)) + 
+   geom_histogram(binwidth=0.1) +
+   ggtitle("Bill Depth Normal Posterior Distribution") +
+   xlab(my_xlab)
+
+ggplot(depth_dat, aes(x, fill=group, colour=group)) + geom_density(alpha=.2) +
+   ggtitle("Bill Depth Normal Posterior Distribution Density") +      
+   xlab(my_xlab)
+
+ggplot(length_dat, aes(x, fill=group, colour=group)) + 
+   geom_histogram(binwidth=0.1) +
+   ggtitle("Bill Length Normal Posterior Distribution") +
+   xlab(my_ylab)
+
+ggplot(length_dat, aes(x, fill=group, colour=group)) + geom_density(alpha=.2) +
+   ggtitle("Bill Length Normal Posterior Distribution Density") +      
+   xlab(my_ylab)
+```
